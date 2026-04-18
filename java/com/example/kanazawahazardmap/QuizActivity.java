@@ -53,6 +53,13 @@ public class QuizActivity extends AppCompatActivity {
 
         if (!quizList.isEmpty()) {
             loadQuestion();
+        } else {
+            textProgress.setText("問題データがありません");
+            textQuestion.setText("quiz_data.json を確認してください");
+            btn1.setEnabled(false);
+            btn2.setEnabled(false);
+            btn3.setEnabled(false);
+            btnNext.setEnabled(false);
         }
 
         btn1.setOnClickListener(v -> checkAnswer(0));

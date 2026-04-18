@@ -9,6 +9,7 @@ import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
+import android.os.Looper;
 import android.util.Log;
 import android.view.Gravity;
 import android.view.View;
@@ -64,7 +65,7 @@ public class MainActivity extends AppCompatActivity {
 
     // ネットワーク通信をメインスレッド以外で実行するためのサービス
     private final ExecutorService executorService = Executors.newSingleThreadExecutor();
-    private final android.os.Handler messageHandler = new android.os.Handler();
+    private final android.os.Handler messageHandler = new android.os.Handler(Looper.getMainLooper());
     private Runnable hideTextRunnable;
 
     @Override
@@ -220,13 +221,17 @@ public class MainActivity extends AppCompatActivity {
                             name.contains("テニスコート") || name.contains("グラウンド") || name.contains("緑道") ||
                             name.contains("遊園") || name.contains("森")) continue;
 
-                    Marker marker = new Marker(map);
-                    marker.setPosition(new GeoPoint(Double.parseDouble(cols[1]), Double.parseDouble(cols[2])));
-                    marker.setTitle(name);
-                    if (scaledIcon != null) marker.setIcon(scaledIcon);
-                    marker.setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM);
-                    map.getOverlays().add(marker);
-                    shelterMarkers.add(marker);
+                    try {
+                        Marker marker = new Marker(map);
+                        marker.setPosition(new GeoPoint(Double.parseDouble(cols[1]), Double.parseDouble(cols[2])));
+                        marker.setTitle(name);
+                        if (scaledIcon != null) marker.setIcon(scaledIcon);
+                        marker.setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM);
+                        map.getOverlays().add(marker);
+                        shelterMarkers.add(marker);
+                    } catch (NumberFormatException ex) {
+                        Log.w("MainActivity", "CSV座標の変換に失敗: " + line, ex);
+                    }
                 }
             }
         } catch (IOException e) {
@@ -256,7 +261,12 @@ public class MainActivity extends AppCompatActivity {
         map.getOverlays().add(startMarker);
 
         nearestShelterMarker = findNearestShelter(point);
-        if (nearestShelterMarker != null) requestRoutes(point, nearestShelterMarker.getPosition());
+        if (nearestShelterMarker != null) {
+            requestRoutes(point, nearestShelterMarker.getPosition(), nearestShelterMarker.getTitle());
+        } else {
+            textView1.setText("避難所データが見つかりません");
+            Toast.makeText(this, "避難所データがありません", Toast.LENGTH_SHORT).show();
+        }
         map.invalidate();
     }
 
@@ -291,7 +301,7 @@ public class MainActivity extends AppCompatActivity {
      * OSRM APIを使用して経路を算出。メインは赤、代替は青で描画します。
      * ルートをタップすると、そのルートの中間地点に候補ラベルを表示する仕組みです。
      */
-    private void requestRoutes(GeoPoint start, GeoPoint destination) {
+    private void requestRoutes(GeoPoint start, GeoPoint destination, String destinationName) {
         executorService.execute(() -> {
             OSRMRoadManager roadManager = new OSRMRoadManager(this, "MyUserAgent");
             roadManager.setMean(OSRMRoadManager.MEAN_BY_FOOT);
@@ -304,17 +314,25 @@ public class MainActivity extends AppCompatActivity {
             final Road[] roads = roadManager.getRoads(waypoints);
 
             runOnUiThread(() -> {
+                if (isFinishing() || isDestroyed()) {
+                    return;
+                }
+
                 closeAllInfoWindows();
                 for (Polyline oldLine : roadOverlays) map.getOverlays().remove(oldLine);
                 for (Marker oldLabel : labelMarkers) map.getOverlays().remove(oldLabel);
                 roadOverlays.clear();
                 labelMarkers.clear();
 
-                if (roads == null) return;
+                if (roads == null || roads.length == 0) {
+                    textView1.setText("ルートを取得できませんでした");
+                    Toast.makeText(MainActivity.this, "ルート取得に失敗しました", Toast.LENGTH_SHORT).show();
+                    return;
+                }
 
                 // 描画順を制御し、メインルート(i=0)が最前面
                 for (int i = roads.length - 1; i >= 0; i--) {
-                    if (roads[i].mStatus == Road.STATUS_OK) {
+                    if (roads[i].mStatus == Road.STATUS_OK && roads[i].mRouteHigh != null && !roads[i].mRouteHigh.isEmpty()) {
                         Polyline line = RoadManager.buildRoadOverlay(roads[i]);
 
                         // ラベル用の見えないマーカーをルートの中間地点に配置
@@ -350,7 +368,7 @@ public class MainActivity extends AppCompatActivity {
                             int minutes = (int) Math.ceil(distanceInMeters / 80.0);
 
                             textView1.setText(String.format("最寄り: %s\n距離: %.0fm / 予想時間: 約%d分",
-                                    nearestShelterMarker.getTitle(), distanceInMeters, minutes));
+                                    destinationName, distanceInMeters, minutes));
 
                             labelMarker.setTitle("候補1 (最短)");
                         } else {
@@ -377,6 +395,13 @@ public class MainActivity extends AppCompatActivity {
 
     @Override protected void onResume() { super.onResume(); if (map != null) map.onResume(); }
     @Override protected void onPause() { super.onPause(); if (map != null) map.onPause(); }
+
+    @Override
+    protected void onDestroy() {
+        messageHandler.removeCallbacksAndMessages(null);
+        executorService.shutdownNow();
+        super.onDestroy();
+    }
 
     /**
      * 国土地理院の浸水深データをタイル形式で取得
